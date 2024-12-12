@@ -344,6 +344,14 @@ ncclResult_t ncclAllGather(const void* sendbuff, void* recvbuff, size_t sendcoun
 ncclResult_t pncclAllGather(const void* sendbuff, void* recvbuff, size_t sendcount, ncclDataType_t datatype,
                             ncclComm_t comm, cudaStream_t stream);
 
+
+/*
+ * Register
+ */
+ncclResult_t ncclCommRegister(ncclComm_t comm, void* buff, size_t size, void** handle);
+ncclResult_t ncclCommDeregister(ncclComm_t comm, void* handle);
+
+
 /*
  * Send
  *
