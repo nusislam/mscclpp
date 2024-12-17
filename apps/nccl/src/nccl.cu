@@ -478,7 +478,6 @@ NCCL_API ncclResult_t ncclAllReduce(const void* sendbuff, void* recvbuff, size_t
   if (sendbuff == nullptr || recvbuff == nullptr || count == 0 || ncclTypeSize(datatype) == 0 || comm == nullptr)
     return ncclInvalidArgument;
 
-  //printf("In allreduce\n");
   // Declarating variables
   size_t bytes = count * ncclTypeSize(datatype);
   int rank = comm->comm->bootstrap()->getRank();
@@ -567,13 +566,24 @@ NCCL_API ncclResult_t ncclAllGather(const void* sendbuff, void* recvbuff, size_t
   return ncclSuccess;
 }
 
+NCCL_API ncclResult_t ncclBuffIsRegistered(ncclComm_t comm, const void* buff, size_t count, bool* registered){
+  size_t buffBytes;
+  CUdeviceptr buffBasePtr;
+  MSCCLPP_CUTHROW(cuMemGetAddressRange(&buffBasePtr, &buffBytes, (CUdeviceptr)buff));
+  channelKey buffKey{(void*)buffBasePtr, buffBytes};
+  auto buffIt = comm->channelScratchInfos.find(buffKey);
+  *registered =  buffIt != comm->channelScratchInfos.end();
+  return ncclSuccess;
+}
+
+
 NCCL_API ncclResult_t ncclCommRegister(ncclComm_t comm, void* buff, size_t size, void** handle) {
   size_t buffBytes;
   CUdeviceptr buffBasePtr;
 
   MSCCLPP_CUTHROW(cuMemGetAddressRange(&buffBasePtr, &buffBytes, (CUdeviceptr)buff));
   
-  size_t offsetIn = (char*)buff - (char*)buffBasePtr;
+  size_t offsetIn = (char*)buff - (char*)buffBasePtr; 
   uint32_t scratchBuffIdx = (++(comm->buffFlag)) % comm->numScratchBuff;
   size_t offsetScratch = (SCRATCH_SIZE / comm->numScratchBuff) * scratchBuffIdx;
   int rank = comm->comm->bootstrap()->getRank();

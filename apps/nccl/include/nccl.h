@@ -348,9 +348,10 @@ ncclResult_t pncclAllGather(const void* sendbuff, void* recvbuff, size_t sendcou
 /*
  * Register
  */
+
 ncclResult_t ncclCommRegister(ncclComm_t comm, void* buff, size_t size, void** handle);
 ncclResult_t ncclCommDeregister(ncclComm_t comm, void* handle);
-
+ncclResult_t ncclBuffIsRegistered(ncclComm_t comm, const void* buff, size_t count, bool* registered);
 
 /*
  * Send
