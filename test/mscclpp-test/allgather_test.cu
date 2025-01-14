@@ -13,6 +13,13 @@
 #define WARP_SIZE 32
 #endif
 
+static void* inputBuff = nullptr;
+static void* resultBuff = nullptr;
+static void* scratchBuff = nullptr;
+static void* scratchPacketBuff = nullptr;
+static void* putPacketBuff = nullptr;
+static void* getPacketBuff = nullptr;
+
 namespace {
 auto isUsingHostOffload = [](int kernelNum) { return kernelNum == 3; };
 constexpr uint64_t MAGIC = 0xdeadbeef;
@@ -26,7 +33,10 @@ __constant__ DeviceHandle<mscclpp::ProxyChannel> constRawProxyChan[16];
 
 __constant__ DeviceHandle<mscclpp::SmChannel> constSmChans[512];
 __constant__ DeviceHandle<mscclpp::SmChannel> constSmOutOfPlaceChans[16];
+
 __device__ uint64_t globalFlag;
+
+std::unordered_map<DeviceHandle<mscclpp::SimpleProxyChannel>*, int > channelInfos;
 
 __global__ void allgather0(int rank, size_t nelemsPerGPU) {
   int warpId = threadIdx.x / WARP_SIZE;
@@ -210,7 +220,7 @@ __global__ void allgather3() {
   }
 }
 
-__global__ void allgather4(int rank, int worldSize, int nRanksPerNode, size_t nelemsPerGPU) {
+__global__ void allgather4(void *buff, void* putPktBuf, void* getPktBuf, int rank, int worldSize, int nRanksPerNode, size_t nelemsPerGPU) {
   // this allgather is a pipelined and hierarchical one and only works for two nodes
   // it is implemented as follows:
   // Step 1: each node does a local allgather and concurrently,
@@ -224,37 +234,75 @@ __global__ void allgather4(int rank, int worldSize, int nRanksPerNode, size_t ne
   const size_t nBlocksForLocalAllGather = gridDim.x;
   int peer_src, peer_dst;
   int peerRank = (rank + nRanksPerNode) % worldSize;
+  uint32_t flag = (uint32_t)globalFlag;
 
   //const size_t nBlocksForLocalAllGather = gridDim.x;
   const size_t rankChunkSize = nelemsPerGPU * sizeof(int);
   const int startRankIndexInLocalNode = (rank / nRanksPerNode) * nRanksPerNode;
   const int startRankIndexInPeerNode = (peerRank / nRanksPerNode) * nRanksPerNode;
 
+
   size_t step1Bytes = nelemsPerGPU * sizeof(int);
   int cur_count = nelemsPerGPU;
   int pof2 = 1;
   int offset = 0;
 
-
+  int2* src = (int2*)((char*)buff + rank * nelemsPerGPU * sizeof(int));
+  
   if (num_nodes > 1) {
-
+	/*if (threadIdx.x == 0 && blockIdx.x == 0) 
+		printf("Entering %d\n", rank);*/
    while (pof2 <= num_nodes / 2) {
         peer_src = (rank + pof2*nRanksPerNode) % worldSize;
         peer_dst = (rank - pof2*nRanksPerNode + worldSize) % worldSize;
-        DeviceHandle<mscclpp::SimpleProxyChannel>& proxyChan_src = constProxyChans[peer_src];
-        DeviceHandle<mscclpp::SimpleProxyChannel>& proxyChan_dst = constProxyChans[peer_dst];
+        DeviceHandle<mscclpp::SimpleProxyChannel>& proxyChan_src = constProxyChans[peer_src % nRanksPerNode];
+        DeviceHandle<mscclpp::SimpleProxyChannel>& proxyChan_dst = constProxyChans[peer_dst % nRanksPerNode];
+
+	//DeviceHandle<mscclpp::SimpleProxyChannel>& proxyChan = nullptr;	
+	size_t nPkts = cur_count / 2;  // 2 elems per packet, assume nelems is even
+  	size_t pktBytes = nPkts * sizeof(mscclpp::LLPacket);
+	size_t pktBufOffset = (flag & 1) ? 0 : nPkts * sizeof(mscclpp::LLPacket);
+	//size_t pktBufOffset = 0;
+
+  	mscclpp::LLPacket* getPktPtr = (mscclpp::LLPacket*)((char*)getPktBuf + pktBufOffset);
+  	mscclpp::LLPacket* putPktPtr = (mscclpp::LLPacket*)((char*)putPktBuf + pktBufOffset);
+
+  	int2* res = (int2*)((char*)buff + rank * nelemsPerGPU * sizeof(int) + cur_count*sizeof(int));
+
+	for (size_t idx = threadIdx.x + blockIdx.x * blockDim.x; idx < nPkts; idx += blockDim.x * gridDim.x) {
+		putPktPtr[idx].write(src[idx].x, src[idx].y, flag);
+	}
+   	
+	constexpr int nBlocksPhase2 = 1;
+
+  	deviceSyncer.sync(nBlocksForLocalAllGather);
+   	//if (blockIdx.x >= nBlocksPhase2) return;
 
         if (threadIdx.x == 0 && blockIdx.x == 0) {
-                proxyChan_dst.putWithSignal(peer_dst*nelemsPerGPU*sizeof(int) + cur_count*sizeof(int), rank*nelemsPerGPU*sizeof(int), cur_count*sizeof(int));
-
-                proxyChan_src.wait();
+                //proxyChan_dst.putWithSignal(peer_dst*nelemsPerGPU*sizeof(int) + cur_count*sizeof(int), rank*nelemsPerGPU*sizeof(int), cur_count*sizeof(int));
+		proxyChan_dst.put(pktBufOffset, pktBytes);
+		if ((flag & 63) == 0)
                 proxyChan_dst.flush();
         }
 
+	//if (blockIdx.x < nBlocksPhase2) {
+	    //for (size_t idx = threadIdx.x + blockIdx.x * blockDim.x; idx < nPkts; idx += blockDim.x * nBlocksPhase2) {
+	    for (size_t idx = threadIdx.x + blockIdx.x * blockDim.x; idx < nPkts; idx += blockDim.x * gridDim.x) {
+
+      	   	uint2 data1 = getPktPtr[idx].read(flag);
+
+      	   	res[idx].x = (int)data1.x;
+      	   	res[idx].y = (int)data1.y;
+            }
+	//}
+
+	//if (threadIdx.x == 0 && blockIdx.x == 0) {
+	    flag = flag + 1;
+  	//}
 	cur_count *= 2;
         pof2 *= 2;
-  }
-  deviceSyncer.sync(nBlocksForLocalAllGather);
+	deviceSyncer.sync(nBlocksForLocalAllGather);	
+     }
 
 	int shift_by = rank / nRanksPerNode;
 
@@ -278,13 +326,17 @@ __global__ void allgather4(int rank, int worldSize, int nRanksPerNode, size_t ne
 		}
 
     	}
-        deviceSyncer.sync(nBlocksForLocalAllGather);
+        //deviceSyncer.sync(nBlocksForLocalAllGather);
 	localAllGatherSm(rank, nRanksPerNode, 0, 0, rankChunkSize, rankChunkSize,
                    nBlocksForLocalAllGather);
 		
   } else {
   	localAllGatherSm(rank, nRanksPerNode, 0, 0, rankChunkSize, rankChunkSize,
                    nBlocksForLocalAllGather);
+  }
+
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    globalFlag = flag;
   }
 
 }
@@ -732,6 +784,8 @@ void AllGatherTestColl::runColl(const TestArgs& args, cudaStream_t stream) {
     //nBlocks = 21;
 	  //printf("num_nodes = %d, nRanksPerNode = %d\n", num_nodes, nRanksPerNode);
     nBlocks = num_nodes * nRanksPerNode;
+    //nBlocks = nRanksPerNode - 1;
+
     nThreads = 1024;
   } else if (kernelNum == 5) {
     nBlocks = 24;
@@ -758,7 +812,7 @@ void AllGatherTestColl::runColl(const TestArgs& args, cudaStream_t stream) {
   } else if (kernelNum == 3) {
     allgather3<<<nBlocks, nThreads, 0, stream>>>();
   } else if (kernelNum == 4) {
-    allgather4<<<nBlocks, nThreads, 0, stream>>>(rank, worldSize, nRanksPerNode, paramCount_);
+    allgather4<<<nBlocks, nThreads, 0, stream>>>((int*)inputBuff, putPacketBuff, getPacketBuff, rank, worldSize, nRanksPerNode, paramCount_);
   } else if (kernelNum == 5) {
     allgather5<<<nBlocks, nThreads, 0, stream>>>(rank, worldSize, nRanksPerNode, paramCount_);
   } else if (kernelNum == 6) {
@@ -849,6 +903,10 @@ class AllGatherTestEngine : public BaseTestEngine {
 
   std::shared_ptr<int> sendBuff_;
   std::shared_ptr<int> tmpBuff_;
+  
+  std::shared_ptr<mscclpp::LLPacket> putPacketBuff_;
+  std::shared_ptr<mscclpp::LLPacket> getPacketBuff_;
+
 
   std::shared_ptr<int[]> expectedBuff_;
   std::shared_ptr<mscclpp::LLPacket> scratchPacketBuff_;
@@ -862,10 +920,21 @@ void AllGatherTestEngine::allocateBuffer() {
   sendBuff_ = mscclpp::allocExtSharedCuda<int>(2*args_.maxBytes / sizeof(int));
   tmpBuff_ = mscclpp::allocExtSharedCuda<int>(args_.maxBytes / sizeof(int));
 
+  inputBuff = sendBuff_.get();
   expectedBuff_ = std::shared_ptr<int[]>(new int[args_.maxBytes / sizeof(int)]);
 
   if (args_.kernelNum == 4) {
 	const size_t nPacket = (2*args_.maxBytes + sizeof(uint64_t) - 1) / sizeof(uint64_t);
+	const size_t packetBuffNelem = nPacket * 2;
+    	const size_t scratchBuffNelem = nPacket * 2; /*original data & reduced result *2 double buffering*/;
+
+	printf("Allocate Buf nelem = %zu\n", packetBuffNelem);
+    	putPacketBuff_ = mscclpp::allocExtSharedCuda<mscclpp::LLPacket>(packetBuffNelem);
+    	getPacketBuff_ = mscclpp::allocExtSharedCuda<mscclpp::LLPacket>(packetBuffNelem);
+    	scratchPacketBuff_ = mscclpp::allocExtSharedCuda<mscclpp::LLPacket>(scratchBuffNelem);
+
+    	putPacketBuff = putPacketBuff_.get();
+    	getPacketBuff = getPacketBuff_.get();
   }
   if (args_.kernelNum == 7 || args_.kernelNum == 8) {
     const size_t nPacket = (args_.maxBytes + sizeof(uint64_t) - 1) / sizeof(uint64_t);
@@ -878,6 +947,34 @@ void AllGatherTestEngine::allocateBuffer() {
 void AllGatherTestEngine::setupConnections() {
   std::vector<DeviceHandle<mscclpp::SimpleProxyChannel>> devProxyChannels;
   if (!isUsingHostOffload(args_.kernelNum)) {
+    if (args_.kernelNum == 4) {
+	 const size_t nPacket = (2*args_.maxBytes + sizeof(uint64_t) - 1) / sizeof(uint64_t);
+
+	 const size_t scratchPacketBuffBytes = nPacket * 2 * sizeof(mscclpp::LLPacket);
+	 const size_t packetBuffBytes = nPacket * 2 * sizeof(mscclpp::LLPacket);
+	 printf("In mesh conn for kernel 4 packetBuffBytes = %zu\n", packetBuffBytes);
+
+	 // build proxyChannels
+	 setupMeshConnections(smChannels_, devProxyChannels, sendBuff_.get(), args_.maxBytes, putPacketBuff_.get()       	, packetBuffBytes, getPacketBuff_.get(), packetBuffBytes, nullptr, 0);
+
+	if (devProxyChannels.size() > sizeof(constProxyChans) / sizeof(DeviceHandle<mscclpp::SimpleProxyChannel>)) {
+	      std::runtime_error("unexpected error");
+    	}
+    	CUDATHROW(cudaMemcpyToSymbol(constProxyChans, devProxyChannels.data(),
+                                 sizeof(DeviceHandle<mscclpp::SimpleProxyChannel>) * devProxyChannels.size()));
+
+	// build smChannels
+	setupMeshConnections(smChannels_, sendBuff_.get(), args_.maxBytes, nullptr, 0, ChannelSemantic::PUT, 64);
+
+	std::vector<DeviceHandle<mscclpp::SmChannel>> smChannelHandles(smChannels_.size());
+	if (smChannels_.size() > sizeof(constSmChans) / sizeof(DeviceHandle<mscclpp::SmChannel>)) {
+      		std::runtime_error("unexpected error");
+    	}
+    	std::transform(smChannels_.begin(), smChannels_.end(), smChannelHandles.begin(),
+                   [](const mscclpp::SmChannel& smChannel) { return mscclpp::deviceHandle(smChannel); });
+    	CUDATHROW(cudaMemcpyToSymbol(constSmChans, smChannelHandles.data(),
+                                 sizeof(DeviceHandle<mscclpp::SmChannel>) * smChannelHandles.size()));
+    } else {
     setupMeshConnections(devProxyChannels, sendBuff_.get(), args_.maxBytes);
 
     if (devProxyChannels.size() > sizeof(constProxyChans) / sizeof(DeviceHandle<mscclpp::SimpleProxyChannel>)) {
@@ -887,6 +984,7 @@ void AllGatherTestEngine::setupConnections() {
                                  sizeof(DeviceHandle<mscclpp::SimpleProxyChannel>) * devProxyChannels.size()));
 
     setupMeshConnections(smChannels_, sendBuff_.get(), args_.maxBytes, nullptr, 0, ChannelSemantic::PUT, 64);
+
     //setupMeshConnections(smChannels_, tmpBuff_.get(), args_.maxBytes, nullptr, 0, ChannelSemantic::PUT, 64);
 
     std::vector<DeviceHandle<mscclpp::SmChannel>> smChannelHandles(smChannels_.size());
@@ -897,7 +995,7 @@ void AllGatherTestEngine::setupConnections() {
                    [](const mscclpp::SmChannel& smChannel) { return mscclpp::deviceHandle(smChannel); });
     CUDATHROW(cudaMemcpyToSymbol(constSmChans, smChannelHandles.data(),
                                  sizeof(DeviceHandle<mscclpp::SmChannel>) * smChannelHandles.size()));
-
+    }
     if (args_.kernelNum == 7 || args_.kernelNum == 8) {
       const size_t nPacket = (args_.maxBytes + sizeof(uint64_t) - 1) / sizeof(uint64_t);
       const size_t scratchPacketBuffBytes = nPacket * 2 * 2 * sizeof(mscclpp::LLPacket);

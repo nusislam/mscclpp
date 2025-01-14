@@ -480,7 +480,9 @@ void BaseTestEngine::setupMeshConnections(std::vector<mscclpp::SmChannel>& smCha
                                           size_t putPacketBuffBytes, void* getPacketBuff, size_t getPacketBuffBytes,
                                           void* outputBuff, size_t outputBuffBytes) {
   const mscclpp::TransportFlags allTransports = mscclpp::Transport::CudaIpc | IBs[args_.gpuNum];
-  mscclpp::RegisteredMemory inputBufRegMem = comm_->registerMemory(inputBuff, inputBuffBytes, allTransports);
+
+  mscclpp::RegisteredMemory inputBufRegMem = comm_->registerMemory(inputBuff, 2*inputBuffBytes, allTransports);
+
   mscclpp::RegisteredMemory putPacketBufRegMem;
   mscclpp::RegisteredMemory getPacketBufRegMem;
   mscclpp::RegisteredMemory outputBufRegMem;
@@ -504,11 +506,14 @@ void BaseTestEngine::setupMeshConnections(std::vector<mscclpp::SmChannel>& smCha
   std::vector<mscclpp::NonblockingFuture<mscclpp::RegisteredMemory>> remoteRegMemories;
   mscclpp::RegisteredMemory& localRegMemory =
       (getPacketBuff) ? getPacketBufRegMem : ((outputBuff) ? outputBufRegMem : inputBufRegMem);
+  /*mscclpp::RegisteredMemory& localRegMemory =
+      (outputBuff) ? outputBufRegMem : inputBufRegMem;*/
 
   setupMeshConnectionsInternal(connections, localRegMemory, remoteRegMemories);
 
   std::vector<mscclpp::NonblockingFuture<mscclpp::RegisteredMemory>> remoteRegMemoriesOutput;
   if (outputBuff) {
+	  printf("In outputBuf\n");
     setupMeshConnectionsInternal(connections, outputBufRegMem, remoteRegMemoriesOutput, false);
   }
 
@@ -518,7 +523,7 @@ void BaseTestEngine::setupMeshConnections(std::vector<mscclpp::SmChannel>& smCha
 
   for (size_t cid = 0; cid < connections.size(); ++cid) {
     if (connections[cid]->transport() == mscclpp::Transport::CudaIpc) {
-      smSemaphores.emplace(cid, std::make_shared<mscclpp::SmDevice2DeviceSemaphore>(*comm_, connections[cid]));
+      //smSemaphores.emplace(cid, std::make_shared<mscclpp::SmDevice2DeviceSemaphore>(*comm_, connections[cid]));
     } else {
       connIdToSemId[cid] = service->buildAndAddSemaphore(*comm_, connections[cid]);
     }
@@ -527,9 +532,9 @@ void BaseTestEngine::setupMeshConnections(std::vector<mscclpp::SmChannel>& smCha
 
   for (size_t cid = 0; cid < connections.size(); ++cid) {
     if (connections[cid]->transport() == mscclpp::Transport::CudaIpc) {
-      smChannels.emplace_back(smSemaphores[cid],
+      /*smChannels.emplace_back(smSemaphores[cid],
                               (outputBuff) ? remoteRegMemoriesOutput[cid].get() : remoteRegMemories[cid].get(),
-                              inputBufRegMem.data(), (outputBuff) ? outputBufRegMem.data() : nullptr);
+                              inputBufRegMem.data(), (outputBuff) ? outputBufRegMem.data() : nullptr);*/
     } else {
       if (putPacketBuff == nullptr || getPacketBuff == nullptr) {
         throw std::runtime_error("IB transport requires putPacketBuff and getPacketBuff");
