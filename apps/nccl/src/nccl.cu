@@ -19,6 +19,7 @@
 #include "allgather.hpp"
 #include "allreduce.hpp"
 #include "broadcast.hpp"
+#include "alltoall.hpp"
 #include "debug.h"
 #include "nccl.h"
 
@@ -296,6 +297,7 @@ static ncclResult_t ncclAllGatherFallback(const void* sendbuff, void* recvbuff, 
     return ncclInvalidArgument;
   }
 
+  //printf("In allgather fallback\n");
   // Declarating variables
   size_t recvBytes;
   CUdeviceptr recvBasePtr;
@@ -742,10 +744,14 @@ NCCL_API ncclResult_t ncclAllGather(const void* sendbuff, void* recvbuff, size_t
   std::shared_ptr<mscclpp::ExecutionPlan> plan;
   void* basePtr = (char*)sendbuff - rank * bytes;
   bool inPlace = basePtr == recvbuff;
+  /*if (inPlace) {
+	printf("Inplace is true\n");
+  }*/
   const size_t totalBytes = bytes * nRank;
   for (const auto& p : plans) {
     if (totalBytes >= p.key.minMessageSize && totalBytes < p.key.maxMessageSize && inPlace == p.key.isInPlace) {
       plan = p.plan;
+      //printf("Inside plan %zu\n", totalBytes);
       break;
     }
   }
@@ -789,10 +795,88 @@ NCCL_API ncclResult_t ncclRecv(void*, size_t, ncclDataType_t, int, ncclComm_t, c
   return ncclInternalError;
 }
 
-NCCL_API ncclResult_t ncclAllToAll(const void*, void*, size_t, ncclDataType_t, ncclComm_t, cudaStream_t) {
+static ncclResult_t ncclAlltoAllFallback(const void* sendbuff, void* recvbuff, size_t count,
+                                          ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream) {
+  // FallBack for single node
+  if (comm->comm->bootstrap()->getNranks() != comm->comm->bootstrap()->getNranksPerNode()) {
+    WARN("ncclAllGatherFallback is currently unavailable for multi-node");
+    return ncclInvalidUsage;
+  }
+
+  // Checking if the parameters are valids
+  size_t bytes = count * ncclTypeSize(datatype);
+  if (sendbuff == nullptr || recvbuff == nullptr || bytes == 0 || comm == nullptr) {
+    WARN(
+        "One or more of the following conditions is met: sendbuff or recvbuff pointer is nullptr, bytes is 0, "
+        "or comm is nullptr.");
+    return ncclInvalidArgument;
+  }
+  return ncclSuccess;
+}
+
+NCCL_API ncclResult_t ncclAllToAll(const void* sendbuff, void* recvbuff, size_t count, ncclDataType_t datatype,
+  ncclComm_t comm, cudaStream_t stream) {
   // TODO: implement this function
-  WARN("ncclAllToAll is currently unavailable");
-  return ncclInternalError;
+  //WARN("ncclAllToAll is currently unavailable");
+  size_t bytes = count * ncclTypeSize(datatype);
+  if (sendbuff == nullptr || recvbuff == nullptr || bytes == 0 || comm == nullptr) {
+    WARN(
+        "One or more of the following conditions is met: sendbuff or recvbuff pointer is nullptr, bytes is 0, "
+        "or comm is nullptr.");
+    return ncclInvalidArgument;
+  }
+
+  int rank = comm->comm->bootstrap()->getRank();
+  int nRank = comm->comm->bootstrap()->getNranks();
+
+  std::vector<executionPlanInstance>& plans = comm->executionPlans["alltoall"];
+  std::shared_ptr<mscclpp::ExecutionPlan> plan;
+  //void* basePtr = (char*)sendbuff - rank * bytes;
+  void* basePtr = (char*)sendbuff;
+
+  bool inPlace = basePtr == recvbuff;
+  const size_t totalBytes = bytes * nRank;
+  /*if (inPlace) {
+        printf("Inplace is true\n");
+  }*/
+
+  for (const auto& p : plans) {
+    if (totalBytes >= p.key.minMessageSize && totalBytes < p.key.maxMessageSize && inPlace == p.key.isInPlace) {
+      plan = p.plan;
+      //printf("Inside plan %zu\n", totalBytes);
+      break;
+    }
+  }
+  if (plan == nullptr) {
+	WARN(
+        "No valid json file provided for the executor");
+    return ncclInvalidArgument;
+  }
+
+  switch (datatype) {
+    case ncclFloat16:
+      comm->executor->execute(rank, (half*)sendbuff, (half*)recvbuff, bytes * nRank, bytes * nRank, mscclpp::DataType::FLOAT16,
+                              *plan, stream);
+      break;
+    case ncclFloat32:
+      comm->executor->execute(rank, (float*)sendbuff, (float*)recvbuff, bytes * nRank, bytes * nRank,
+                              mscclpp::DataType::FLOAT32, *plan, stream);
+      break;
+    case ncclBfloat16:
+      comm->executor->execute(rank, (__bfloat16*)sendbuff, (__bfloat16*)recvbuff, bytes * nRank, bytes * nRank,
+                              mscclpp::DataType::BFLOAT16, *plan, stream);
+      break;
+    case ncclInt32:
+    case ncclUint32:
+      comm->executor->execute(rank, (int*)sendbuff, (int*)recvbuff, bytes * nRank, bytes * nRank, mscclpp::DataType::UINT32,
+                              *plan, stream);
+      break;
+    default:
+      WARN("datatype is invalid");
+      return ncclInvalidArgument;
+  }  
+
+  return ncclSuccess;
 }
 
 NCCL_API ncclResult_t ncclGroupStart() {
