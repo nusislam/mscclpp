@@ -96,6 +96,24 @@ include(${PROJECT_SOURCE_DIR}/cmake/AddFormatTargets.cmake)
 
 # Find ibverbs and libnuma
 find_package(IBVerbs)
+
+# Check if IBV_ACCESS_RELAXED_ORDERING exists in infiniband/verbs.h
+# Disable use of this symbol in mscclpp/src/ib.cc if it does not exist
+if(IBVERBS_FOUND)
+  try_compile(HAS_IBV_ACCESS_RELAXED_ORDERING
+    ${CMAKE_BINARY_DIR}
+    "${CMAKE_CURRENT_SOURCE_DIR}/check_ibv_access_relaxed_ordering.cc"
+    CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${IBVERBS_INCLUDE_DIRS}"
+    OUTPUT_VARIABLE try_compile_output
+  )
+  message(STATUS "try_compile_output: ${try_compile_output}")
+  if(NOT HAS_IBV_ACCESS_RELAXED_ORDERING)
+    message(WARNING "IBV_ACCESS_RELAXED_ORDERING does not exist in ${IBVERBS_INCLUDE_DIRS}/infiniband/verbs.h. Disabling this symbol in mscclpp/src/ib.cc.")
+  else()
+    message(STATUS "IBV_ACCESS_RELAXED_ORDERING exists in ${IBVERBS_INCLUDE_DIRS}/infiniband/verbs.h.")
+  endif()
+endif()
+
 find_package(NUMA REQUIRED)
 find_package(Threads REQUIRED)
 

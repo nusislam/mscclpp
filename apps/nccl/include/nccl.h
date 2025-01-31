@@ -370,6 +370,10 @@ ncclResult_t ncclSend(const void* sendbuff, size_t count, ncclDataType_t datatyp
 ncclResult_t pncclSend(const void* sendbuff, size_t count, ncclDataType_t datatype, int peer, ncclComm_t comm,
                        cudaStream_t stream);
 
+ncclResult_t ncclCommDeregister(ncclComm_t comm, void* handle);
+bool mscclpp_BuffIsRegistered(ncclComm_t comm, const void* buff);
+size_t mscclpp_BufferSize(ncclComm_t comm, void* handle);
+
 /*
  * Receive
  *
