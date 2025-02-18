@@ -368,7 +368,13 @@ __global__ void __launch_bounds__(512, 1)
   const size_t chanOffset = nPeer * blockIdx.x;
   // assume (nelems * sizeof(T)) is divisible by (16 * worldSize)
   const size_t nInt4 = nelems * sizeof(T) / sizeof(int4);
-  const size_t nInt4PerRank = nInt4 / worldSize;
+  
+  //const size_t nInt4PerRank = nInt4 / worldSize;
+  size_t nInt4PerRank = nInt4 / worldSize;
+
+  if (nInt4 % worldSize)
+  	nInt4PerRank = nInt4PerRank + 1;
+
   auto memoryChans = memoryChannels + chanOffset;
   auto memoryOutChans = memoryOutChannels + chanOffset;
 
