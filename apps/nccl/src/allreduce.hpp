@@ -71,16 +71,22 @@ __forceinline__ __device__ __bfloat162 clip(__bfloat162 val) {
 template <typename T>
 __forceinline__ __device__ T add_elements(T a, T b) {
   return clip(a + b);
+  //return (a + b);
+
 }
 
 template <>
 __forceinline__ __device__ __half2 add_elements(__half2 a, __half2 b) {
   return clip(__hadd2(a, b));
+  //return __hadd2(a, b);
+
 }
 
 template <>
 __forceinline__ __device__ __bfloat162 add_elements(__bfloat162 a, __bfloat162 b) {
   return clip(__hadd2(a, b));
+  //return __hadd2(a, b);
+
 }
 
 template <typename T>
@@ -526,7 +532,9 @@ cudaError_t allreduce(T* buff, T* scratch, T* resultBuff, mscclpp::DeviceHandle<
                                                          flag++);
 #endif
   } else {
-    int nBlocks = 35;
+    int nBlocks = 56;
+    if (sizeof(T) * nelems < (1 << 23)) 
+	nBlocks = 64;
     int nThreadsPerBlock = 512;
     allreduce8<<<nBlocks, nThreadsPerBlock, 0, stream>>>(buff, scratch, resultBuff, smChannels, smOutChannels,
                                                          channelOutOffset, channelScratchOffset, rank, nRanksPerNode,
