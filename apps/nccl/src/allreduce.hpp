@@ -78,9 +78,32 @@ __forceinline__ __device__ __half2 add_elements(__half2 a, __half2 b) {
   return clip(__hadd2(a, b));
 }
 
+__forceinline__ __device__ float bhalf2float(__hip_bfloat16 x)
+{
+    uint32_t tmp = __builtin_bit_cast(uint16_t, x);
+    return __builtin_bit_cast(float, tmp << 16);
+}
+
+__forceinline__ __device__ __hip_bfloat16 float2bhalf(float x)
+{
+    uint16_t tmp = __builtin_bit_cast(uint32_t, x) >> 16;
+    return __builtin_bit_cast(__hip_bfloat16, tmp);
+}
+
+__forceinline__ __device__ __hip_bfloat16 add_bf16_rtz(__hip_bfloat16 x, __hip_bfloat16 y)
+{
+    float tmp = bhalf2float(x) + bhalf2float(y);
+    return float2bhalf(tmp);
+}
+
 template <>
 __forceinline__ __device__ __bfloat162 add_elements(__bfloat162 a, __bfloat162 b) {
-  return clip(__hadd2(a, b));
+  #ifdef EXP_BFLOAT16_ADD 
+    return {add_bf16_rtz(a.x, b.x), add_bf16_rtz(a.y, b.y)};
+  #else
+    return clip(__hadd2(a, b));
+  #endif
+
 }
 
 template <typename T>
@@ -368,7 +391,9 @@ __global__ void __launch_bounds__(512, 1)
   const size_t chanOffset = nPeer * blockIdx.x;
   // assume (nelems * sizeof(T)) is divisible by (16 * worldSize)
   const size_t nInt4 = nelems * sizeof(T) / sizeof(int4);
-  const size_t nInt4PerRank = nInt4 / worldSize;
+  size_t nInt4PerRank = nInt4 / worldSize;
+  if (nInt4 % worldSize)
+	  nInt4PerRank = nInt4PerRank + 1;
   auto memoryChans = memoryChannels + chanOffset;
   auto memoryOutChans = memoryOutChannels + chanOffset;
 
@@ -842,7 +867,10 @@ cudaError_t allreduce(T* buff, T* scratch, T* resultBuff, mscclpp::DeviceHandle<
                                                          flag++);
 #endif
   } else {
-    int nBlocks = 5 * (nRanksPerNode - 1);
+    int nBlocks = 8 * (nRanksPerNode - 1);
+    if (sizeof(T) * nelems <= (1 << 23)) {
+	nBlocks = 5 * (nRanksPerNode - 1);
+    }
     int nThreadsPerBlock = 512;
     if (hieAllred && worldSize >= 8) {
         nBlocks = 20;

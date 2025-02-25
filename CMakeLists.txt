@@ -22,6 +22,11 @@ option(MSCCLPP_USE_CUDA "Use NVIDIA/CUDA." OFF)
 option(MSCCLPP_USE_ROCM "Use AMD/ROCm." OFF)
 option(MSCCLPP_BYPASS_GPU_CHECK "Bypass GPU check." OFF)
 option(MSCCLPP_NPKIT_FLAGS "Enable NPKIT" OFF)
+option(EXP_BFLOAT16_ADD "Enable experimental bfloat16 add" OFF)
+
+if(EXP_BFLOAT16_ADD)
+    message(STATUS "EXP_BFLOAT16_ADD ENABLED")
+endif()
 
 if(MSCCLPP_BYPASS_GPU_CHECK)
     if(MSCCLPP_USE_CUDA)
@@ -127,6 +132,10 @@ target_include_directories(mscclpp_obj
     ${GPU_INCLUDE_DIRS}
     ${NUMA_INCLUDE_DIRS})
 target_link_libraries(mscclpp_obj PRIVATE ${GPU_LIBRARIES} ${NUMA_LIBRARIES} nlohmann_json::nlohmann_json Threads::Threads dl)
+
+if(EXP_BFLOAT16_ADD)
+    target_compile_definitions(mscclpp_obj PUBLIC EXP_BFLOAT16_ADD)
+endif()
 if(IBVERBS_FOUND)
     target_include_directories(mscclpp_obj SYSTEM PRIVATE ${IBVERBS_INCLUDE_DIRS})
     target_link_libraries(mscclpp_obj PRIVATE ${IBVERBS_LIBRARIES})
