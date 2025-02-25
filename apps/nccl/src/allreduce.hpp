@@ -552,8 +552,8 @@ __global__ void __launch_bounds__(512, 1)
    const size_t nItrs = nInt4OfThisBlock / nInt4PerChunk;
   const size_t restNInt4 = nInt4OfThisBlock % nInt4PerChunk;
 
-  __shared__ mscclpp::DeviceHandle<mscclpp::SmChannel> channels[NRANKS_PER_NODE - 1];
-  __shared__ mscclpp::DeviceHandle<mscclpp::SmChannel> outChannels[NRANKS_PER_NODE - 1];
+  __shared__ mscclpp::DeviceHandle<mscclpp::MemoryChannel> channels[NRANKS_PER_NODE - 1];
+  __shared__ mscclpp::DeviceHandle<mscclpp::MemoryChannel> outChannels[NRANKS_PER_NODE - 1];
   const int lid = threadIdx.x % WARP_SIZE;
   if (lid < nPeer) {
     channels[lid] = smChans[lid];
@@ -662,9 +662,9 @@ __global__ void __launch_bounds__(1024, 1)
 
   int localRank = rank % NRANKS1_PER_NODE;
 
-  __shared__ mscclpp::DeviceHandle<mscclpp::SmChannel> channels[NRANKS_PER_NODE - 1];
-  __shared__ mscclpp::DeviceHandle<mscclpp::SmChannel> outChannels[NRANKS_PER_NODE - 1];
-  __shared__ mscclpp::DeviceHandle<mscclpp::SmChannel> scrChannels[NRANKS_PER_NODE - 1];
+  __shared__ mscclpp::DeviceHandle<mscclpp::MemoryChannel> channels[NRANKS_PER_NODE - 1];
+  __shared__ mscclpp::DeviceHandle<mscclpp::MemoryChannel> outChannels[NRANKS_PER_NODE - 1];
+  __shared__ mscclpp::DeviceHandle<mscclpp::MemoryChannel> scrChannels[NRANKS_PER_NODE - 1];
 
   const int lid = threadIdx.x % WARP_SIZE;
   if (lid < nPeer) {
