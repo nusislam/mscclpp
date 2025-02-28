@@ -92,6 +92,8 @@ struct ncclComm {
   std::shared_ptr<char> scratchBuff;
   std::vector<mscclpp::RegisteredMemory> remoteScratchRegMemories;
 
+  cudaStream_t prevStream;
+  hipEvent_t doneEvent;
   uint32_t numScratchBuff;
   uint32_t buffFlag;
 };
@@ -205,6 +207,13 @@ static ncclResult_t ncclAllReduceFallback(const void* sendbuff, void* recvbuff, 
     return ncclInvalidArgument;
   }
 
+#ifdef MSCCLPP_ENABLE_STREAM_SWITCH
+  if (stream != comm->prevStream) { // sync required for calls in different streams
+    comm->prevStream = stream;
+    CUDACHECK(hipStreamWaitEvent(stream, comm->doneEvent, 0));
+  }
+#endif
+
   // Declarating variables
   size_t sendBytes, recvBytes;
   CUdeviceptr sendBasePtr, recvBasePtr;
@@ -266,28 +275,31 @@ static ncclResult_t ncclAllReduceFallback(const void* sendbuff, void* recvbuff, 
     case ncclFloat16:
       CUDACHECK(allreduce((half*)sendbuff, (half*)comm->scratchBuff.get(), (half*)recvbuff, memoryChannels,
                           memoryOutChannels, offsetIn, offsetOut, offsetScratch, rank, NRANKS_PER_NODE,
-                          comm->comm->bootstrap()->getNranks(), count, stream));
+                          comm->comm->bootstrap()->getNranks(), count, stream, &comm->doneEvent));
       break;
     case ncclFloat32:
       CUDACHECK(allreduce((float*)sendbuff, (float*)comm->scratchBuff.get(), (float*)recvbuff, memoryChannels,
                           memoryOutChannels, offsetIn, offsetOut, offsetScratch, comm->comm->bootstrap()->getRank(),
-                          NRANKS_PER_NODE, comm->comm->bootstrap()->getNranks(), count, stream));
+                          NRANKS_PER_NODE, comm->comm->bootstrap()->getNranks(), count, stream, &comm->doneEvent));
       break;
     case ncclBfloat16:
       CUDACHECK(allreduce((__bfloat16*)sendbuff, (__bfloat16*)comm->scratchBuff.get(), (__bfloat16*)recvbuff,
                           memoryChannels, memoryOutChannels, offsetIn, offsetOut, offsetScratch, rank, NRANKS_PER_NODE,
-                          comm->comm->bootstrap()->getNranks(), count, stream));
+                          comm->comm->bootstrap()->getNranks(), count, stream, &comm->doneEvent));
       break;
     case ncclInt32:
     case ncclUint32:
       CUDACHECK(allreduce((int*)sendbuff, (int*)comm->scratchBuff.get(), (int*)recvbuff, memoryChannels,
                           memoryOutChannels, offsetIn, offsetOut, offsetScratch, comm->comm->bootstrap()->getRank(),
-                          NRANKS_PER_NODE, comm->comm->bootstrap()->getNranks(), count, stream));
+                          NRANKS_PER_NODE, comm->comm->bootstrap()->getNranks(), count, stream, &comm->doneEvent));
       break;
     default:
       WARN("datatype is invalid, datatype: %d", datatype);
       return ncclInvalidArgument;
   }
+#ifdef MSCCLPP_ENABLE_STREAM_SWITCH
+	CUDACHECK(hipEventRecord(comm->doneEvent, stream));
+#endif
   return ncclSuccess;
 }
 
@@ -444,6 +456,10 @@ NCCL_API ncclResult_t ncclCommInitRank(ncclComm_t* comm, int nranks, ncclUniqueI
       }
     }
   }
+
+  hipEvent_t doneEvent;
+  CUDACHECK(hipEventCreateWithFlags(&doneEvent, hipEventDisableTiming));
+  commPtr->doneEvent = doneEvent;
 
   *comm = commPtr;
 #if defined(ENABLE_NPKIT)

@@ -22,6 +22,11 @@ option(MSCCLPP_USE_CUDA "Use NVIDIA/CUDA." OFF)
 option(MSCCLPP_USE_ROCM "Use AMD/ROCm." OFF)
 option(MSCCLPP_BYPASS_GPU_CHECK "Bypass GPU check." OFF)
 option(MSCCLPP_NPKIT_FLAGS "Enable NPKIT" OFF)
+option(MSCCLPP_ENABLE_STREAM_SWITCH "Enable stream switching" OFF)
+
+if(MSCCLPP_ENABLE_STREAM_SWITCH)
+	message(STATUS "Stream switching enabled")
+endif()
 
 if(MSCCLPP_BYPASS_GPU_CHECK)
     if(MSCCLPP_USE_CUDA)
@@ -109,6 +114,11 @@ target_include_directories(mscclpp_obj
     ${GPU_INCLUDE_DIRS}
     ${NUMA_INCLUDE_DIRS})
 target_link_libraries(mscclpp_obj PRIVATE ${GPU_LIBRARIES} ${NUMA_LIBRARIES} nlohmann_json::nlohmann_json Threads::Threads dl)
+
+if(MSCCLPP_ENABLE_STREAM_SWITCH)
+	target_compile_definitions(mscclpp_obj PUBLIC MSCCLPP_ENABLE_STREAM_SWITCH)
+endif()
+
 if(IBVERBS_FOUND)
     target_include_directories(mscclpp_obj SYSTEM PRIVATE ${IBVERBS_INCLUDE_DIRS})
     target_link_libraries(mscclpp_obj PRIVATE ${IBVERBS_LIBRARIES})

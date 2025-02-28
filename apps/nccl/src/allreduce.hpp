@@ -17,6 +17,7 @@
 #endif
 
 #include "common.hpp"
+#include <hip/hip_ext.h>
 
 template <typename To, typename From>
 __forceinline__ __device__ To bit_cast(const From& src) {
@@ -499,7 +500,7 @@ template <typename T>
 cudaError_t allreduce(T* buff, T* scratch, T* resultBuff, mscclpp::DeviceHandle<mscclpp::MemoryChannel>* memoryChannels,
                       mscclpp::DeviceHandle<mscclpp::MemoryChannel>* memoryOutChannels, size_t channelInOffset,
                       size_t channelOutOffset, size_t channelScratchOffset, int rank, int nRanksPerNode, int worldSize,
-                      size_t nelems, cudaStream_t stream) {
+                      size_t nelems, cudaStream_t stream, hipEvent_t* doneEvent) {
   static uint32_t flag = 1;
 
   if (sizeof(T) * nelems < worldSize * sizeof(int)) {
@@ -521,6 +522,7 @@ cudaError_t allreduce(T* buff, T* scratch, T* resultBuff, mscclpp::DeviceHandle<
         buff, scratch, resultBuff, memoryChannels, channelInOffset, channelScratchOffset, rank, nRanksPerNode,
         worldSize, nelems, flag++, NpKit::GetGpuEventCollectContexts(), NpKit::GetCpuTimestamp());
 #else
+
     allreduce7<<<nBlocks, nThreadsPerBlock, 0, stream>>>(buff, scratch, resultBuff, memoryChannels, channelInOffset,
                                                          channelScratchOffset, rank, nRanksPerNode, worldSize, nelems,
                                                          flag++);
@@ -528,9 +530,19 @@ cudaError_t allreduce(T* buff, T* scratch, T* resultBuff, mscclpp::DeviceHandle<
   } else {
     int nBlocks = 35;
     int nThreadsPerBlock = 512;
+#ifdef MSCCLPP_ENABLE_STREAM_SWITCH
+    //allreduce8<<<nBlocks, nThreadsPerBlock, 0, stream>>>(buff, scratch, resultBuff, memoryChannels, memoryOutChannels,
+      //                                                   channelOutOffset, channelScratchOffset, rank, nRanksPerNode,
+        //                                                 worldSize, nelems);
+    hipExtLaunchKernelGGL(allreduce8, nBlocks, nThreadsPerBlock, 0, stream, NULL, *doneEvent, 0, buff, scratch, 
+			    				resultBuff, memoryChannels, memoryOutChannels,
+                                                         channelOutOffset, channelScratchOffset, rank, nRanksPerNode,
+                                                         worldSize, nelems); 
+#else
     allreduce8<<<nBlocks, nThreadsPerBlock, 0, stream>>>(buff, scratch, resultBuff, memoryChannels, memoryOutChannels,
                                                          channelOutOffset, channelScratchOffset, rank, nRanksPerNode,
                                                          worldSize, nelems);
+#endif
   }
 
   return cudaGetLastError();
